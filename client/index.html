@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Live Bus Tracker</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <style>
+    html,body,#map { height: 100%; margin: 0; }
+    .info { position: absolute; left: 10px; top: 10px; z-index: 1000; background: white; padding:8px; border-radius:4px; box-shadow: 0 2px 6px rgba(0,0,0,.2);}
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="info">
+    <label>Bus ID: <input id="busId" value="bus101"/></label>
+    <button id="watch">Watch</button>
+    <button id="stop">Stop</button>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // Configure your server origin, e.g. http://localhost:3000 or https://your-render-url.onrender.com
+    const SERVER_ORIGIN = (typeof SERVER_ORIGIN !== 'undefined') ? SERVER_ORIGIN : 'http://localhost:3000';
+
+    const socket = io(SERVER_ORIGIN, { autoConnect: false }); // passenger namespace (default)
+    let map = L.map('map').setView([20.5937,78.9629], 5); // center on India by default
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    let marker = null;
+    let currentBusId = null;
+
+    socket.on('connect', () => console.log('connected to socket.io'));
+    socket.on('locationUpdate', (data) => {
+      // data: { busId, lat, lng, ts }
+      if (data.busId !== currentBusId) return;
+      const latlng = [data.lat, data.lng];
+      if (!marker) {
+        marker = L.marker(latlng).addTo(map).bindPopup(`Bus ${data.busId}`);
+        map.setView(latlng, 15);
+      } else {
+        marker.setLatLng(latlng);
+      }
+    });
+    socket.on('driverDisconnected', (data) => {
+      if (data.busId === currentBusId) {
+        console.warn('Driver disconnected for', data.busId);
+      }
+    });
+
+    document.getElementById('watch').onclick = () => {
+      const busId = document.getElementById('busId').value.trim();
+      if (!busId) return alert('enter bus id');
+      currentBusId = busId;
+      socket.connect();
+      // join the room
+      socket.emit('subscribe', { busId });
+      // optionally fetch last-known via REST
+      fetch(`${SERVER_ORIGIN}/api/bus/${busId}/last`).then(r => {
+        if (!r.ok) return;
+        return r.json();
+      }).then(json => {
+        if (json && json.lat && json.lng) {
+          const latlng = [json.lat, json.lng];
+          if (!marker) {
+            marker = L.marker(latlng).addTo(map).bindPopup(`Bus ${busId}`);
+            map.setView(latlng, 15);
+          } else marker.setLatLng(latlng);
+        }
+      }).catch(()=>{});
+    };
+
+    document.getElementById('stop').onclick = () => {
+      if (!currentBusId) return;
+      socket.emit('unsubscribe', { busId: currentBusId });
+      currentBusId = null;
+      if (marker) { map.removeLayer(marker); marker = null; }
+      socket.disconnect();
+    };
+  </script>
+</body>
+</html>
